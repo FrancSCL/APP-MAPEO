@@ -1,0 +1,2 @@
+C:/Users/F5/Desktop/MAPEOAPP/APP_MOVIL_BASE/android/app/.cxx/RelWithDebInfo/262o5u1u/armeabi-v7a/CMakeFiles/edit_cache.dir
+C:/Users/F5/Desktop/MAPEOAPP/APP_MOVIL_BASE/android/app/.cxx/RelWithDebInfo/262o5u1u/armeabi-v7a/CMakeFiles/rebuild_cache.dir
