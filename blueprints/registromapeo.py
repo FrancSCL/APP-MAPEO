@@ -278,4 +278,252 @@ def obtener_registros_por_estado(estado_id):
         
         return jsonify(registros), 200
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# 🔹 NUEVO: Obtener progreso en tiempo real de un registro de mapeo
+@registromapeo_bp.route('/<string:registro_id>/progreso', methods=['GET'])
+@jwt_required()
+def obtener_progreso_registro(registro_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Obtener información del registro y cuartel
+        cursor.execute("""
+            SELECT rm.id, rm.id_cuartel, c.nombre as nombre_cuartel
+            FROM mapeo_fact_registromapeo rm
+            LEFT JOIN general_dim_cuartel c ON rm.id_cuartel = c.id
+            WHERE rm.id = %s
+        """, (registro_id,))
+        
+        registro = cursor.fetchone()
+        if not registro:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Registro de mapeo no encontrado"}), 404
+        
+        # Obtener todas las hileras del cuartel
+        cursor.execute("""
+            SELECT id, nombre, id_cuartel
+            FROM general_dim_hilera
+            WHERE id_cuartel = %s
+            ORDER BY nombre ASC
+        """, (registro['id_cuartel'],))
+        
+        hileras = cursor.fetchall()
+        total_hileras = len(hileras)
+        hileras_completadas = 0
+        
+        # Calcular progreso por hilera
+        hileras_con_progreso = []
+        for hilera in hileras:
+            # Obtener total de plantas en la hilera
+            cursor.execute("""
+                SELECT COUNT(*) as total_plantas
+                FROM general_dim_planta
+                WHERE id_hilera = %s
+            """, (hilera['id'],))
+            
+            total_plantas_result = cursor.fetchone()
+            total_plantas = total_plantas_result['total_plantas'] if total_plantas_result else 0
+            
+            # Obtener plantas mapeadas en esta hilera para este registro
+            cursor.execute("""
+                SELECT COUNT(*) as plantas_mapeadas
+                FROM mapeo_fact_registro r
+                INNER JOIN general_dim_planta p ON r.id_planta = p.id
+                WHERE p.id_hilera = %s AND r.id_evaluador IN (
+                    SELECT id_evaluador FROM mapeo_fact_registromapeo WHERE id = %s
+                )
+            """, (hilera['id'], registro_id))
+            
+            plantas_mapeadas_result = cursor.fetchone()
+            plantas_mapeadas = plantas_mapeadas_result['plantas_mapeadas'] if plantas_mapeadas_result else 0
+            
+            # Calcular porcentaje
+            porcentaje = (plantas_mapeadas / total_plantas * 100) if total_plantas > 0 else 0
+            
+            # Obtener estado de hilera desde la tabla de estados
+            cursor.execute("""
+                SELECT estado FROM mapeo_fact_estado_hilera 
+                WHERE id_registro_mapeo = %s AND id_hilera = %s
+            """, (registro_id, hilera['id']))
+            
+            estado_result = cursor.fetchone()
+            if estado_result:
+                estado = estado_result['estado']
+            else:
+                # Si no hay estado definido, calcularlo basado en plantas mapeadas
+                if plantas_mapeadas == 0:
+                    estado = "pendiente"
+                elif plantas_mapeadas == total_plantas:
+                    estado = "completado"
+                else:
+                    estado = "en_progreso"
+            
+            # Contar hileras completadas
+            if estado == "completado":
+                hileras_completadas += 1
+            
+            hileras_con_progreso.append({
+                "id_hilera": hilera['id'],
+                "nombre": hilera['nombre'],
+                "total_plantas": total_plantas,
+                "plantas_mapeadas": plantas_mapeadas,
+                "porcentaje": round(porcentaje, 2),
+                "estado": estado
+            })
+        
+        # Calcular porcentaje general
+        porcentaje_general = (hileras_completadas / total_hileras * 100) if total_hileras > 0 else 0
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "id_registro": registro_id,
+            "cuartel": registro['nombre_cuartel'],
+            "total_hileras": total_hileras,
+            "hileras_completadas": hileras_completadas,
+            "porcentaje_general": round(porcentaje_general, 2),
+            "hileras": hileras_con_progreso
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# 🔹 NUEVO: Obtener estadísticas generales de registros de mapeo
+@registromapeo_bp.route('/estadisticas', methods=['GET'])
+@jwt_required()
+def obtener_estadisticas():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Obtener total de registros
+        cursor.execute("SELECT COUNT(*) as total FROM mapeo_fact_registromapeo")
+        total_registros = cursor.fetchone()['total']
+        
+        # Obtener registros por estado
+        cursor.execute("""
+            SELECT id_estado, COUNT(*) as cantidad
+            FROM mapeo_fact_registromapeo
+            GROUP BY id_estado
+        """)
+        
+        estados = cursor.fetchall()
+        en_progreso = 0
+        finalizados = 0
+        pausados = 0
+        
+        for estado in estados:
+            if estado['id_estado'] == 1:  # En progreso
+                en_progreso = estado['cantidad']
+            elif estado['id_estado'] == 2:  # Finalizado
+                finalizados = estado['cantidad']
+            elif estado['id_estado'] == 3:  # Pausado
+                pausados = estado['cantidad']
+        
+        # Calcular porcentaje completado general
+        porcentaje_completado = (finalizados / total_registros * 100) if total_registros > 0 else 0
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "total_registros": total_registros,
+            "en_progreso": en_progreso,
+            "finalizados": finalizados,
+            "pausados": pausados,
+            "porcentaje_completado_general": round(porcentaje_completado, 2)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# 🔹 NUEVO: Actualizar estado de una hilera específica
+@registromapeo_bp.route('/<string:registro_id>/hilera/<int:hilera_id>/estado', methods=['PUT'])
+@jwt_required()
+def actualizar_estado_hilera(registro_id, hilera_id):
+    try:
+        data = request.json
+        estado = data.get('estado')
+        usuario_id = get_jwt_identity()
+        
+        if not estado or estado not in ['en_progreso', 'pausado', 'completado']:
+            return jsonify({"error": "Estado debe ser: en_progreso, pausado o completado"}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Verificar que el registro existe
+        cursor.execute("""
+            SELECT id FROM mapeo_fact_registromapeo WHERE id = %s
+        """, (registro_id,))
+        
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Registro de mapeo no encontrado"}), 404
+        
+        # Verificar que la hilera existe
+        cursor.execute("""
+            SELECT id FROM general_dim_hilera WHERE id = %s
+        """, (hilera_id,))
+        
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Hilera no encontrada"}), 404
+        
+        # Verificar si ya existe un estado para esta hilera en este registro
+        cursor.execute("""
+            SELECT id FROM mapeo_fact_estado_hilera 
+            WHERE id_registro_mapeo = %s AND id_hilera = %s
+        """, (registro_id, hilera_id))
+        
+        estado_existente = cursor.fetchone()
+        
+        if estado_existente:
+            # Actualizar estado existente
+            cursor.execute("""
+                UPDATE mapeo_fact_estado_hilera 
+                SET estado = %s, id_usuario = %s, fecha_actualizacion = NOW()
+                WHERE id_registro_mapeo = %s AND id_hilera = %s
+            """, (estado, usuario_id, registro_id, hilera_id))
+        else:
+            # Crear nuevo estado
+            estado_id = str(uuid.uuid4())
+            cursor.execute("""
+                INSERT INTO mapeo_fact_estado_hilera 
+                (id, id_registro_mapeo, id_hilera, estado, id_usuario)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (estado_id, registro_id, hilera_id, estado, usuario_id))
+        
+        conn.commit()
+        
+        # Obtener el estado actualizado
+        cursor.execute("""
+            SELECT eh.estado, eh.fecha_actualizacion, h.nombre as nombre_hilera
+            FROM mapeo_fact_estado_hilera eh
+            INNER JOIN general_dim_hilera h ON eh.id_hilera = h.id
+            WHERE eh.id_registro_mapeo = %s AND eh.id_hilera = %s
+        """, (registro_id, hilera_id))
+        
+        estado_actualizado = cursor.fetchone()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "hilera_actualizada": {
+                "id_hilera": hilera_id,
+                "nombre_hilera": estado_actualizado['nombre_hilera'],
+                "estado": estado_actualizado['estado'],
+                "fecha_actualizacion": estado_actualizado['fecha_actualizacion'].isoformat()
+            }
+        }), 200
+        
+    except Exception as e:
         return jsonify({"error": str(e)}), 500 

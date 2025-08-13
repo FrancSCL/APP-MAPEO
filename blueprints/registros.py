@@ -268,4 +268,30 @@ def obtener_registros_por_planta(planta_id):
         
         return jsonify(registros), 200
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# 🔹 NUEVO: Obtener registros por hilera
+@registros_bp.route('/hilera/<int:hilera_id>', methods=['GET'])
+@jwt_required()
+def obtener_registros_por_hilera(hilera_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT r.id, r.id_evaluador, r.hora_registro, r.id_planta, r.id_tipoplanta, r.imagen,
+                   p.planta as numero_planta, p.ubicacion, tp.nombre as tipo_planta_nombre
+            FROM mapeo_fact_registro r
+            INNER JOIN general_dim_planta p ON r.id_planta = p.id
+            LEFT JOIN general_dim_tipoplanta tp ON r.id_tipoplanta = tp.id
+            WHERE p.id_hilera = %s
+            ORDER BY p.planta ASC, r.hora_registro DESC
+        """, (hilera_id,))
+        
+        registros = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        return jsonify(registros), 200
+    except Exception as e:
         return jsonify({"error": str(e)}), 500 
