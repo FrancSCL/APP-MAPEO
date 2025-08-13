@@ -334,36 +334,3 @@ def buscar_cuarteles_por_nombre(nombre):
         return jsonify(cuarteles), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500 
-
-# 🔹 Obtener cuarteles con catastro finalizado
-@cuarteles_bp.route('/catastro-finalizado', methods=['GET'])
-@jwt_required()
-def obtener_cuarteles_catastro_finalizado():
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        # Obtener cuarteles activos con catastro finalizado
-        cursor.execute("""
-            SELECT 
-                c.id, c.id_ceco, c.nombre, c.id_variedad, c.superficie, c.ano_plantacion, 
-                c.dsh, c.deh, c.id_propiedad, c.id_portainjerto, c.brazos_ejes, c.id_estado, 
-                c.fecha_baja, c.id_estadoproductivo, c.n_hileras, c.id_estadocatastro,
-                ce.id_sucursal, s.nombre AS nombre_sucursal,
-                ec.nombre AS nombre_estado_catastro
-            FROM general_dim_cuartel c
-            LEFT JOIN general_dim_ceco ce ON c.id_ceco = ce.id
-            LEFT JOIN general_dim_sucursal s ON ce.id_sucursal = s.id
-            LEFT JOIN mapeo_dim_estadocatastro ec ON c.id_estadocatastro = ec.id
-            WHERE c.id_estado = 1 
-            AND c.id_estadocatastro = 2  -- Asumiendo que 2 = "Finalizado"
-            ORDER BY c.nombre ASC
-        """)
-        
-        cuarteles = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        return jsonify(cuarteles), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500 
